@@ -40,7 +40,7 @@ mask[img_noisy_var == 0] = 0
 mask_np, mask_var = prepare_mask(img_noisy_np)
 mask_var = torch.from_numpy(mask_np).type(dtype)
 
-file_name  = 'J:/GT/'+data+'gt' 
+file_name  = 'om1'
 
 mat = scipy.io.loadmat(file_name)
 img = mat["Ohsi"]
@@ -149,11 +149,11 @@ def closure(iter):
     D_4 = (D_4 + mu * (D_xz  - V_4)).clone().detach()
     D_5 = (D_5 + mu * (D_yz  - V_5)).clone().detach()
 
-    out_np = out.detach().cpu().squeeze().numpy()
-    psnr_gt    = psnr3d(np.clip(img_np.astype(np.float32),0,1), np.clip(out_np, 0, 1)) 
     if iter % show_every == 0:
+        out_np = out.detach().cpu().squeeze().numpy()
+        psnr_gt = psnr3d(np.clip(img_np.astype(np.float32),0,1), np.clip(out_np, 0, 1))
         print ('Iteration %05d    PSNR_gt: %f ' % (iter, psnr_gt), '\r', end='')
-        
+
         plt.figure(figsize=(11,22))
         plt.subplot(121)
         plt.imshow(np.clip(np.stack((out_np[show[0],:,:],
@@ -166,7 +166,11 @@ def closure(iter):
                              img_noisy_np[show[1],:,:],
                              img_noisy_np[show[2],:,:]),2),0,1))
         plt.title('Noisy')
-        plt.show()
+        plt.draw()
+        plt.pause(0.001)
+        plt.close()
+    else:
+        psnr_gt = 0
     return psnr_gt,0
 
 p = get_params(OPT_OVER, net, net_input)
