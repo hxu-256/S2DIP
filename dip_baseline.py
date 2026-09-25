@@ -33,8 +33,8 @@ torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 dtype = torch.cuda.FloatTensor
 
-DATA_PATH = "/mnt/d/GaTech Dropbox/Haoyu Xu/workspace/DDS2M/exp/datasets/ood_msi/bcars_denoising.mat"
-OUT_DIR   = "./results/bcars/dip"
+DATA_PATH = "./data/cube.mat"          # override with --data
+OUT_DIR   = "./results/dip"            # override with --out-dir
 
 # network / optimization defaults (match the S2DIP runs)
 TT            = 4
@@ -48,8 +48,8 @@ def get_noise_2d(input_depth, spatial_size, var=1. / 10.):
     return net_input
 
 
-def load_data():
-    mat = scipy.io.loadmat(DATA_PATH)
+def load_data(data_path=DATA_PATH):
+    mat = scipy.io.loadmat(data_path)
     img_noisy = mat["y_0_real"].astype(np.float64)   # (320, 320, 695) noisy
     img       = mat["img_clean"].astype(np.float64)  # ground truth
     norm_min  = float(mat["norm_min"])
@@ -57,10 +57,11 @@ def load_data():
     img_noisy_np = img_noisy.transpose(2, 0, 1).astype(np.float32)  # (bands, H, W)
     img_np       = img.transpose(2, 0, 1).astype(np.float32)
     img_noisy_var = torch.from_numpy(img_noisy_np).type(dtype)[None, :]  # [1, bands, H, W]
-    return img_np, img_noisy_np, img_noisy_var, norm_min, norm_max
+    wn = np.asarray(mat["wn"]).ravel() if "wn" in mat else None  # wavenumber axis (cm^-1)
+    return img_np, img_noisy_np, img_noisy_var, norm_min, norm_max, wn
 
 
-def save_cube(out_np, path, norm_min, norm_max, extra=None):
+def save_cube(out_np, path, norm_min, norm_max, wn=None, extra=None):
     cube = out_np.transpose(1, 2, 0)  # (H, W, bands)
     d = {
         'denoised':      cube.astype(np.float32),
@@ -68,6 +69,8 @@ def save_cube(out_np, path, norm_min, norm_max, extra=None):
         'norm_min':      np.array([[norm_min]]),
         'norm_max':      np.array([[norm_max]]),
     }
+    if wn is not None:
+        d['wn'] = np.asarray(wn).reshape(1, -1)
     if extra:
         d.update(extra)
     scipy.io.savemat(path, d)
@@ -86,10 +89,11 @@ def main():
                          '2 = |d2/dlambda2| (piecewise-linear, preserves peak shape)')
     ap.add_argument('--gpu', default=None)
     ap.add_argument('--out-dir', default=OUT_DIR)
+    ap.add_argument('--data', default=DATA_PATH, help='path to the .mat cube to denoise')
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    img_np, img_noisy_np, img_noisy_var, norm_min, norm_max = load_data()
+    img_np, img_noisy_np, img_noisy_var, norm_min, norm_max, wn = load_data(args.data)
     B, H, W = img_noisy_var.shape[1], img_noisy_var.shape[2], img_noisy_var.shape[3]
     img_np_c = np.clip(img_np.astype(np.float32), 0, 1)
     print('noisy_PSNR:', psnr3d(img_np_c, np.clip(img_noisy_np, 0, 1)))
@@ -140,10 +144,10 @@ def main():
 
         if args.save_every and it % args.save_every == 0:
             out_np = out.detach().cpu().squeeze().numpy()
-            save_cube(out_np, os.path.join(args.out_dir, 'dip_iter%05d.mat' % it), norm_min, norm_max)
+            save_cube(out_np, os.path.join(args.out_dir, 'dip_iter%05d.mat' % it), norm_min, norm_max, wn=wn)
 
     # best (early-stopping) cube
-    save_cube(best['out'], os.path.join(args.out_dir, 'dip_best.mat'), norm_min, norm_max, extra={
+    save_cube(best['out'], os.path.join(args.out_dir, 'dip_best.mat'), norm_min, norm_max, wn=wn, extra={
         'img_clean':    img_np.transpose(1, 2, 0).astype(np.float32),
         'y_0_real':     img_noisy_np.transpose(1, 2, 0).astype(np.float32),
         'psnr_history': np.array(history, dtype=np.float32),
@@ -152,7 +156,7 @@ def main():
     })
     # final-iteration cube (since PSNR may not be representative, keep both)
     final_np = out.detach().cpu().squeeze().numpy()
-    save_cube(final_np, os.path.join(args.out_dir, 'dip_final.mat'), norm_min, norm_max, extra={
+    save_cube(final_np, os.path.join(args.out_dir, 'dip_final.mat'), norm_min, norm_max, wn=wn, extra={
         'img_clean':    img_np.transpose(1, 2, 0).astype(np.float32),
         'y_0_real':     img_noisy_np.transpose(1, 2, 0).astype(np.float32),
         'psnr_history': np.array(history, dtype=np.float32),

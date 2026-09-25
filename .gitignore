@@ -1,4 +1,8 @@
 results/
-.claude/
+autotune/
+svd-bench/
+__pycache__/
+*.pyc
+*.png
+*.html
 .vscode/
-
