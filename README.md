@@ -1,32 +1,36 @@
 # S2DIP — BCARS fork
 
-Fork of [YisiLuo/S2DIP](https://github.com/YisiLuo/S2DIP) — *Hyperspectral Mixed Noise Removal
-Via Spatial-Spectral Constrained Unsupervised Deep Image Prior*, IEEE JSTARS 2021 — carrying
-the deep image prior (DIP) baseline used in *Denoising broadband CARS hyperspectral images on
-variance-stabilized data: a unified benchmark* ([journal], [year]).
+Fork of [YisiLuo/S2DIP](https://github.com/YisiLuo/S2DIP) (Luo et al., *Hyperspectral Mixed
+Noise Removal Via Spatial-Spectral Constrained Unsupervised Deep Image Prior*, IEEE JSTARS
+2021), adapted to denoise broadband CARS (BCARS) hyperspectral cubes on variance-stabilized
+data, as used in *Denoising broadband CARS hyperspectral images on variance-stabilized data: a
+unified benchmark*.
 
-## What this fork adds
+The fork adds one file, **`dip_baseline.py`**. Upstream solves a spatial-spectral TV model with
+ADMM (`demo.py`); on BCARS that spatial prior over-smooths, so this runner fits the untrained
+network (upstream `models/skip*`) with a **spectral-only** TV penalty,
+`‖f(z) − y‖² + λ·TV_λ(f(z))`, where `TV_λ` is `mean|Δ_λ x|` (`--spec-order 1`) or
+`mean|Δ²_λ x|` (`--spec-order 2`, curvature — preserves peak shape where first order clips it).
+Nothing constrains the spatial axes, so sharp features such as bead edges survive. Everything
+else — `models/`, `utils/`, `demo.py`, the sample cubes — is upstream code, unmodified.
 
-One file: **`dip_baseline.py`** (169 lines). Upstream solves a spatial-spectral TV model with
-ADMM (`demo.py`, `S2DIP_main.py`); for BCARS that spatial prior over-smooths, so the paper uses
-a plain DIP fit with a **spectral-only** TV penalty:
+DIP overfits, so the useful reconstruction is an intermediate iterate: checkpoints are written
+along the whole trajectory and `--save-every` matters more than `--num-iter`.
 
-- the untrained encoder–decoder (`models/skip*`) and the training loop are upstream's,
-- the loss is `‖f(z) − y‖² + λ · TV_spectral(f(z))`, where `TV_spectral` is
-  `mean |Δ_λ x|` (`--spec-order 1`) or `mean |Δ²_λ x|` (`--spec-order 2`, curvature — preserves
-  peak shape where first order clips it),
-- nothing constrains the spatial axes, so sharp features such as bead edges survive,
-- checkpoints are written along the whole trajectory, because DIP overfits and the useful
-  iterate is an intermediate one.
+## Running it on your own cube
 
-Everything else — `models/`, `utils/` (including `utils/tv_utils.py`), `demo.py`, the sample
-cubes — is upstream code, unmodified.
+**1. Prepare the input.** A MATLAB `.mat` with
 
-## Running it on a cube
+| key | meaning |
+|---|---|
+| `y_0_real` | the noisy cube, `(H, W, C)`, normalized to `[0, 1]` |
+| `img_clean` | ground truth, same shape — **zeros** if you have none |
+| `norm_min`, `norm_max` | de-normalization back to physical units |
+| `wn` | wavenumber axis (cm⁻¹) |
 
-Input is a MATLAB `.mat` with `y_0_real` (noisy cube, `(H, W, C)`, normalized to `[0, 1]`),
-`img_clean` (ground truth, or zeros if you have none), `norm_min` / `norm_max` and `wn`. The
-pipeline repository's `h5tomat_detrend.py` writes exactly this; DDS2M reads the same schema.
+The pipeline repository's `h5tomat_detrend.py` writes this schema; DDS2M reads the same file.
+
+**2. Run.**
 
 ```bash
 python dip_baseline.py \
@@ -35,40 +39,35 @@ python dip_baseline.py \
     --num-iter 10000 --eval-every 50 --save-every 1000 --gpu 0
 ```
 
-Outputs in `--out-dir`: `dip_iter<N>.mat` along the trajectory, `dip_final.mat`, and
-`dip_best.mat` (highest PSNR against `img_clean`), each holding the denoised cube in `denoised`
-plus the de-normalization constants. `run.log` and `metrics.json` record the trajectory.
+**3. Collect the output.** Everything lands in `--out-dir`:
 
-**Which iterate to take.** `dip_best.mat` is only meaningful when `img_clean` holds a real
-reference. On experimental cubes `img_clean` is zeros, so its PSNR is computed against zeros
-and the "best" iterate is noise-selected — take a checkpoint chosen by inspecting the
-reconstruction, or score against a measurement-based pseudo-ground-truth. DIP overfits quickly
-(on glycerol the useful iterate is around 50–100), so `--save-every` matters more than
-`--num-iter`.
+| file | meaning |
+|---|---|
+| `dip_iter<N>.mat` | checkpoint every `--save-every` iterations — **the trajectory to choose from** |
+| `dip_final.mat` | the last iterate |
+| `dip_best.mat` | highest PSNR *against `img_clean`* |
+| `run.log`, `metrics.json` | loss and score history |
 
-## Settings used in the paper
+Each `.mat` holds the reconstruction in `denoised` plus the de-normalization constants;
+`phys = x * (norm_max - norm_min) + norm_min`.
 
-| cube | `--spec-tv` | `--spec-order` | `--lr` | iterate |
-|---|---|---|---|---|
-| simulated (5 FOVs) | 0.005 | 1 | 0.005 | `dip_best` (exact ground truth available) |
-| glycerol | 0.05 | 2 | 0.003 | `dip_final` |
-| 1 µm bead | 0 | 1 | 0.003 | checkpoint at iteration 1000 |
-| *C. elegans* | 0 | 1 | 0.003 | checkpoint at iteration 2000 |
+`dip_best.mat` is only meaningful when `img_clean` holds a real reference. With `img_clean = 0`
+the PSNR is computed against zeros and the "best" iterate is noise-selected — pick a checkpoint
+by inspecting the reconstruction, or score against a measurement-based pseudo-ground-truth. On
+glycerol the useful iterate arrives around iteration 50–100; on the bead and worm cubes,
+around 1000–2000.
 
-All on the noclip (unbounded) variant of the variance-stabilized cube; the grid searches behind
-these choices are not part of this repository.
+Settings behind the paper's results: simulated cubes `--spec-tv 0.005 --spec-order 1 --lr 0.005`
+(`dip_best`, exact ground truth available); glycerol `0.05 / 2 / 0.003` (`dip_final`); bead and
+worm `0 / 1 / 0.003` at iterations 1000 and 2000. All on the noclip variance-stabilized cube.
 
+<!--
 ## Related
 
 - Processing pipeline (VST, detrending, CCV, phase retrieval) and the paper's metrics:
   [pipeline repo URL]
-- Denoised cubes and metric tables: [Zenodo DOI]
+- Denoised cubes and metric tables: [Zenodo DOI] -->
 
 Please cite Luo et al. (JSTARS 2021) alongside our paper if you use this code.
-
----
-
-## Upstream README
-
-Official implementation of "Hyperspectral Mixed Noise Removal Via Spatial-Spectral Constrained
-Unsupervised Deep Image Prior", IEEE JSTARS, 2021.
+Upstream documentation: YisiLuo/S2DIP (https://github.com/YisiLuo/S2DIP) — the original
+spatial-spectral TV model and its citation.
